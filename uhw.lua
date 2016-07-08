@@ -36,8 +36,6 @@ function populateFileTable(addr, logFile)
 				else
 					logFile:write("File record ("..start..") corrupted\n")
 					name = nil
-					start = nil
-					place = nil
 					start = place
 					break
 				end
@@ -62,6 +60,7 @@ function populateFileTable(addr, logFile)
 						return false
 					end
 					loc = loc * bit
+					lastNum = bit
 				end
 				lastNum = nil
 				if name ~= nil then
@@ -84,6 +83,7 @@ function populateFileTable(addr, logFile)
 							return false
 						end
 						length = length * bit
+						lastNum = bit
 					end
 					lastNum = nil
 					if length ~= nil then
@@ -125,9 +125,9 @@ function populateFileTable(addr, logFile)
 					end
 				end
 			end
-		end
-		if drive.readByte(place) == 4 then
-			return files
+			if drive.readByte(place) == 4 then
+				return files
+			end
 		end
 	end
 	return false
@@ -137,7 +137,7 @@ function createFile(addr, record)
 	local drive = comp.proxy(addr)
 	local data = ""
 	for i = 0, record.length-1 do
-		data = data..drive.readByte(record.loc+i)
+		data = data..string.char(drive.readByte(record.loc+i))
 	end
 	local file = io.open("/mnt/"..string.sub(addr, 1, 3).."/"..record.name, "w")
 	file:write(data)
