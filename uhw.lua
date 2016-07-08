@@ -5,7 +5,7 @@ sys = require "filesystem"
 event = require "event"
 args = {...}
 
-function populateFileTable(addr)
+function populateFileTable(addr, logFile)
 	local drive = comp.proxy(addr)
 	local sect = drive.readSector(1)
 	local files = {}
@@ -146,7 +146,6 @@ end
 
 function wrapper(name, addr, cType)
 	local logFile = io.open("/var/log/uhw.log", "a")
-	logFile:write("Triggered "..addr.." "..cType)
 	if cType == "drive" then
 		if sys.exists("/mnt/"..string.sub(addr, 1, 3)) then
 			logFile:write("Failed to wrap "..addr..": Address is too similar\n")
@@ -172,8 +171,8 @@ function wrapper(name, addr, cType)
 		logFile:close()
 		return false
 	elseif cType == "UHW_Test" and addr == uuid then
-		logFile:write("Recieved test component\n")
-		logfile:close()
+		logFile:write("Hook check received successfully\n")
+		logFile:close()
 		device.pushSignal("UHW_Test_Response")
 		return true
 	end
@@ -205,6 +204,7 @@ if args[1] == "hook" then --HOOK
 			os.exit()
 		end
 		logFile:write("Hook created\n")
+		logFile:flush()
 		device.pushSignal("component_added", uuid, "UHW_Test")
 		pulled = event.pull(1, "UHW_Test_Response")
 		if pulled == nil then
