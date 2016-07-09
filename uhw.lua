@@ -8,15 +8,8 @@ args = {...}
 function populateFileTable(addr, logFile)
 	local drive = comp.proxy(addr)
 	local sect = drive.readSector(1)
-	local files = {}
-	if string.sub(sect, 1, 9) == "ACDOSBOOT" then
-		--Recognized format not designed to be wrapped
-		return false
-	elseif string.sub(sect, 1, 7) == "ACDOSFS" then
-		--Implement when ACDOSFS is defined
-		logFile:write("Recognized format not defined")
-		return false
-	elseif string.sub(sect, 1, 5) == "UHWFS" then
+	if string.sub(sect, 1, 5) == "UHWFS" then
+		local files = {}
 		local place = 6
 		while true do
 			local start = place
@@ -178,6 +171,27 @@ function wrapper(name, addr, cType)
 	end
 end
 
+function installDriver()
+	internet = comp.proxy(comp.list("internet")())
+	print("Connecting to Github")
+	socket = internet.request("https://raw.githubusercontent.com/TYKUHN2/UHW/master/uhwfso.lua", nil, {User-Agent = "OpenComputers Script ( oc.cil.li )"})
+	repeat
+		result, err = pcall(socket.finishConnect)
+		if err then
+			io.stderr:write("Connection error: "..err.."\n")
+			print("Installation complete")
+			os.exit()
+		end
+	until result == true
+	repeat
+		code = socket.read()
+	until string.len(code) > 0
+	socket.close()
+	lib = io.open("/usr/lib/uhwfso.lua", "w")
+	lib:write(code)
+	lib:close()
+end
+
 if args[1] == "hook" then --HOOK
 	if sys.exists("/mnt/.uhw") then
 		io.stderr:write("UHW already hooked\n")
@@ -226,8 +240,19 @@ if args[1] == "hook" then --HOOK
 		file:close()
 	end
 elseif args[1] == "update" then --UPDATE
-	--update files on hdd according to /mnt/
-	io.stderr:write("UHW_ERROR: Attempt to update, not implemented\n")
+	if sys.exists("/usr/lib/uhwfso.lua") then
+		fso = require "uhwfso.lua"
+		for drive in comp.list("drive") do
+			name = string.sub(drive, 1, 3).."/"
+			if sys.exists("/mnt/"..name) then
+				fileTable = fso.createTable("/mnt/"..name)
+				fso.rewriteTable(fileTable, drive)
+				fso.writeDrive(fileTable, "/mnt/"..name, drive)
+			end
+		end
+	else
+		io.stderr:write("Error: Unable to locate write driver")
+	end
 elseif args[1] == "unhook" then --UNHOOK
 	if not sys.exists("/mnt/.uhw") then
 		io.stderr:write("UHW not hooked")
@@ -251,17 +276,21 @@ elseif args[1] == "install" then --INSTALL
 		sys.makeDirectory("/usr/bin/")
 	end
 	file = io.open("/usr/man/uhw", "w")
-	file:write("Usages for UHW:\n")
-	file:write("WARNING: DOES NOT REWRITE TO HARDDRIVES CURRENTLY\n")
-	file:write("uhw hook --Wrapps and adds unmanaged harddrives to the file system\n")
-	file:write("uhw unhook --Unwraps harddrives and cleans up\n")
-	file:write("uhw update --All changes to wrapped files are saved to harddrive, doesn't work\n")
-	file:write("uhw uninstall --Deletes this man page and the log\n")
+	file:write("Help is internal to UHW. Execute without parameters")
 	file:close()
 	if path ~= "/usr/bin/uhw.lua" then
 		sys.copy(path, "/usr/bin/uhw.lua")
 		sys.remove(path)
 	end
+	if comp.internet then
+		print("Would you like to download the write driver? (Y)/N")
+		if string.lower(string.sub(io.read(), 1, 1)) == "n" then
+			print("Installation complete")
+			os.exit()
+		end
+		installDriver()
+	end
+	print("Installation complete")
 elseif args[1] == "uninstall" then --UNINSTALL
 	proc = require "process"
 	if sys.exists("/mnt/.uhw") then
@@ -271,12 +300,21 @@ elseif args[1] == "uninstall" then --UNINSTALL
 	pcall(sys.remove("/usr/man/uhw"))
 	pcall(sys.remove("/var/log/uhw.log"))
 	print("Executable currently located at "..proc.running())
-else --HELP
+elseif args[1] == "download" and args[2] == "fso_driver" then --DOWNLOAD FSO_DRIVER
+	if not comp.internet then
+		io.stderr:write("Internet card not detected\n")
+		os.exit()
+	end
+	installDriver()
+else--HELP
 	print("Usages for Unmanaged Harddrive Wrapper (UHW):")
 	io.stderr:write("WARNING: DOES NOT REWRITE TO HARDDRIVES CURRENTLY\n")
 	print("uhw hook --Wraps and adds unmanaged harddrives to the file system")
 	print("uhw unhook --Unwraps harddrives and cleans up")
 	print("uhw update --All changes to wrapped files are saved to harddrive, doesn't work")
-	print("uhw install --Copies files to the right places and makes the man page (copy of this)")
-	print("uhw uninstall --Deletes the man page and log")
+	print("uhw install --Makes a mess with various dependencies used for full functioning")
+	print("uhw uninstall --Cleans up UHW mess")
+	if not sys.exists("/usr/lib/uhwfso.lua") then
+		print("uhw download fso_driver --Downloads the UHW write driver")
+	end
 end
