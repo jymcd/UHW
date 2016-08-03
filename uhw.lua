@@ -4,136 +4,12 @@ comp = require "component"
 sys = require "filesystem"
 event = require "event"
 args = {...}
-
-function populateFileTable(addr, logFile)
-	local drive = comp.proxy(addr)
-	local sect = drive.readSector(1)
-	if string.sub(sect, 1, 5) == "UHWFS" then
-		local files = {}
-		local place = 6
-		while true do
-			local start = place
-			local name = ""
-			while true do
-				local bit = drive.readByte(place) --Shut up people sensitive about the use of bit here :)
-				place = place + 1
-				if bit == 30 and string.len(name) > 0 then
-					start = place
-					break
-				end
-				if bit > 33 and bit < 126 then --No extended ascii :( not even sure if OC supports it (and normal fs). Will implement if it does
-					name = name..string.char(bit)
-				elseif bit == 0 then
-					logFile:write("File record ("..start..") corrupted, unable to parse table\n")
-					return false
-				else
-					logFile:write("File record ("..start..") corrupted\n")
-					name = nil
-					start = place
-					break
-				end
-			end
-			if name ~= nil then
-				local loc = 1
-				local lastNum = 0
-				while true do
-					local bit = drive.readByte(place)
-					place = place + 1
-					if bit < 0 and lastNum ~= 0 then
-						loc = loc / lastNum
-						loc = loc + lastNum
-						break
-					elseif bit < 0 and lastNum == 0 then
-						logFile:write("File record ("..start..") corrupted\n")
-						name = nil
-						loc = nil
-						break
-					elseif bit == 0 then
-						logFile:write("File record ("..start..") corrupted, unable to parse table\n")
-						return false
-					end
-					loc = loc * bit
-					lastNum = bit
-				end
-				lastNum = nil
-				if name ~= nil then
-					local length = 1
-					local lastNum = 0
-					while true do
-						local bit = drive.readByte(place)
-						place = place + 1
-						if bit < 0 and lastNum ~= 0 then
-							length = length / lastNum
-							length = length + lastNum
-							break
-						elseif bit < 0 and lastNum == 0 then
-							logFile:write("File record ("..start..") corrupted\n")
-							name = nil
-							length = nil
-							break
-						elseif bit == 0 then
-							logFile:write("File record ("..start..") corrupted, unable to parse table\n")
-							return false
-						end
-						length = length * bit
-						lastNum = bit
-					end
-					lastNum = nil
-					if length ~= nil then
-						table.insert(files, {name = name, loc = loc, length = length})
-						place = place + 1
-					else
-						while true do
-							local bit = drive.readByte(place)
-							place = place + 1
-							if bit == 28 then
-								break
-							elseif bit == 0 then
-								logFile:write("Previous file record ("..start..") suddenly ended, unable to parse table\n")
-								return false
-							end
-						end
-					end
-				else
-					while true do
-						local bit = drive.readByte(place)
-						place = place + 1
-						if bit == 28 then
-							break
-						elseif bit == 0 then
-							logFile:write("Previous file record ("..start..") suddenly ended, unable to parse table\n")
-							return false
-						end
-					end
-				end
-			else
-				while true do
-					local bit = drive.readByte(place)
-					place = place + 1
-					if bit == 28 then
-						break
-					elseif bit == 0 then
-						logFile:write("Previous file record ("..start..") suddenly ended, unable to parse table\n")
-						return false
-					end
-				end
-			end
-			if drive.readByte(place) == 4 then
-				return files
-			end
-		end
-	end
-	return false
-end
+version = "0.0.1"
 
 function createFile(addr, record)
 	local drive = comp.proxy(addr)
-	local data = ""
-	for i = 0, record.length-1 do
-		data = data..string.char(drive.readByte(record.loc+i))
-	end
-	local file = io.open("/mnt/"..string.sub(addr, 1, 3).."/"..record.name, "w")
-	file:write(data)
+	local file = io.open("/mnt/"..string.sub(addr, 1, 3).."/"..record.path..record.name, "w")
+	file:write(record.data)
 	file:close()
 end
 
@@ -143,16 +19,23 @@ function wrapper(name, addr, cType)
 		if sys.exists("/mnt/"..string.sub(addr, 1, 3)) then
 			logFile:write("Failed to wrap "..addr..": Address is too similar\n")
 		else
+			logFile:write("Detecting format for "..addr.."\n")
+			local sect = comp.invoke(addr, "readSector", 1)
+			local name = string.match(sect, "(%w+)\00")
+			local vers = comp.invoke(addr, "readByte", string.len(name)+2)
+			vers = vers + 128
+			logFile:write("Loading "..name.." v"..vers.."\n")
+			local driver = require name.."-v"..vers..".lua"
 			logFile:write("Wrapping "..addr.."\n")
 			sys.makeDirectory("/mnt/"..string.sub(addr, 1, 3))
-			local files = populateFileTable(addr, logFile)
-			if files == false then
-				logFile:write("Error reading drive "..addr.."\n")
+			local files = driver.parseTable(addr)
+			if type(files) == "string" then
+				logFile:write("Driver Error: "..files.."\n")
+				logFile.close()
 				sys.remove("/mnt/"..string.sub(addr, 1, 3))
-				logFile:close()
 				return true
 			end
-			for useless, record in ipairs(files) do
+			for useless, record in pairs(files) do
 				logFile:write("Creating file "..record.name)
 				createFile(addr, record)
 			end
@@ -169,27 +52,6 @@ function wrapper(name, addr, cType)
 		device.pushSignal("UHW_Test_Response")
 		return true
 	end
-end
-
-function installDriver()
-	internet = comp.proxy(comp.list("internet")())
-	print("Connecting to Github")
-	socket = internet.request("https://raw.githubusercontent.com/TYKUHN2/UHW/master/uhwfso.lua", nil, {User-Agent = "OpenComputers Script ( oc.cil.li )"})
-	repeat
-		result, err = pcall(socket.finishConnect)
-		if err then
-			io.stderr:write("Connection error: "..err.."\n")
-			print("Installation complete")
-			os.exit()
-		end
-	until result == true
-	repeat
-		code = socket.read()
-	until string.len(code) > 0
-	socket.close()
-	lib = io.open("/usr/lib/uhwfso.lua", "w")
-	lib:write(code)
-	lib:close()
 end
 
 if args[1] == "hook" then --HOOK
@@ -282,14 +144,6 @@ elseif args[1] == "install" then --INSTALL
 		sys.copy(path, "/usr/bin/uhw.lua")
 		sys.remove(path)
 	end
-	if comp.internet then
-		print("Would you like to download the write driver? (Y)/N")
-		if string.lower(string.sub(io.read(), 1, 1)) == "n" then
-			print("Installation complete")
-			os.exit()
-		end
-		installDriver()
-	end
 	print("Installation complete")
 elseif args[1] == "uninstall" then --UNINSTALL
 	proc = require "process"
@@ -300,12 +154,77 @@ elseif args[1] == "uninstall" then --UNINSTALL
 	pcall(sys.remove("/usr/man/uhw"))
 	pcall(sys.remove("/var/log/uhw.log"))
 	print("Executable currently located at "..proc.running())
-elseif args[1] == "download" and args[2] == "fso_driver" then --DOWNLOAD FSO_DRIVER
+elseif args[1] == "download" then 
 	if not comp.internet then
 		io.stderr:write("Internet card not detected\n")
 		os.exit()
 	end
-	installDriver()
+	if args[2] == "driver" then
+		name = string.lower(args[3])
+		version = tostring(tonumber(args[4]))
+		internet = comp.proxy(comp.list("internet")())
+		baseUrls = {
+			uhwfs = "https://raw.githubusercontent.com/TYKUHN2/UHW/master/drivers/uhwfs/"
+			}
+		if not baseUrls[name] then
+			io.stderr("Invalid driver")
+			os.exit()
+		end
+		print("Downloading "..name.."-v"..version..".lua")
+		socket = internet.request(baseUrls[name]..name.."-v"..version..".lua")
+		repeat
+			result, err = pcall(socket.finishConnect)
+			if err then
+				socket.close()
+				io.stderr:write("Connection error: "..err.."\n")
+				os.exit()
+			end
+		until result == true
+		repeat
+			code, data = socket.response()
+		until code
+		socket.close()
+		if code == 404 then
+			io.stderr("Driver not found")
+			os.exit()
+		end
+		lib = io.open("/usr/lib/uhwfso.lua", "w")
+		lib:write(code)
+		lib:close()
+	elseif args[2] == "main" then
+		baseUrl = "https://raw.githubusercontent.com/TYKUHN2/UHW/master/"
+		print("Checking version")
+		versSock = internet.request(baseUrl.."version.txt")
+		repeat
+			result, err = pcall(versSock.finishConnect)
+			if err then
+				versSock.close()
+				io.stderr:write("Connection error: "..err.."\n")
+				os.exit()
+			end
+		until result == true
+		if version != versSock.read(math.huge) then
+			print("Downloading UHW Main file")
+			socket = internet.request(baseUrl.."uhw.lua")
+			repeat
+				result, err = pcall(socket.finishConnect)
+				if err then
+					socket.close()
+					io.stderr:write("Connection error: "..err.."\n")
+					os.exit()
+				end
+			until result == true
+			proc = require "process"
+			file = io.open(proc.running(), "w")
+			file:write(socket.read(math.huge))
+			file:close()
+			socket.close()
+			print("Update complete")
+		else
+			print("UHW Main file is already up to date")
+		end
+		versSock.close()
+	end
 else--HELP
 	print("Usages for Unmanaged Harddrive Wrapper (UHW):")
 	io.stderr:write("WARNING: DOES NOT REWRITE TO HARDDRIVES CURRENTLY\n")
@@ -314,6 +233,8 @@ else--HELP
 	print("uhw update --All changes to wrapped files are saved to harddrive, doesn't work")
 	print("uhw install --Makes a mess with various dependencies used for full functioning")
 	print("uhw uninstall --Cleans up UHW mess")
+	print("uhw download driver name version --Downloads the specified driver if it is offically recognized")
+	print("uhw download main --Updates the UHW main lua file")
 	if not sys.exists("/usr/lib/uhwfso.lua") then
 		print("uhw download fso_driver --Downloads the UHW write driver")
 	end
