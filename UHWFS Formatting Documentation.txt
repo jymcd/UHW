@@ -2,32 +2,37 @@ Format for UHW compatible harddrives:
 
 Note: This documentation excludes ACDOSFS (another compatible format)
 
-The first 5 bytes of all UHWFS (The format UHW uses) harddrives should
-contain "UHWFS" followed by a null byte, a version byte. Following this immediantly is the file record table.
-Each record is split into 3 parts. The file name, the data location,
-and for speed, the data size. They are read in that order.
+The first 5 bytes of all UHWFS (The format UHW uses) harddrives should contain "UHWFS" followed by a null byte, a version byte.
+Next is a 1 byte root table size byte.
+Following this immediantly is the root file record table.
+Each record is split into 4 parts. The file name, the file type, the data location, and for speed, the data size.
 
 The file name:
-	Non-extended ASCII characters between 33 and 126 (most symbols and
-	all alpha-numeric characters)
-	Name is ended by a 30
-	SHOULD NEVER CONTAIN A 0 BYTE: This will end in an IMMEDIATE abort.
+	Non-extended ASCII characters between 32 and 126 (most symbols and all alpha-numeric characters)
+	Name is ended by a end of text (3)
+	
+The file type:
+	Single byte. Types include:
+		01: FILE
+		02: DIRECTORY
 	
 The data location:
-	The data location is constructed by reading every byte between the
-		file name and the next negative byte.
+	The data location is constructed by reading every byte between the file name and the next byte below 1.
 	The last number is added, every other number is multiplied.
-	SHOULD NEVER CONTAIN A 0 BYTE: This will end in an IMMEDIATE abort.
-	SHOULD NEVER START NEGATIVE: This will end in an IMMEDIATE abort.
-	LOCATIONS SMALLER THAN 127 WILL BE OFFSET BY 1! ACCOUNT FOR THIS
 
 The length:
 	Read the data location, it's handled the same only after the location.
-	SAME RESTRICTIONS APPLY. Same results on breaking those restrictions.
-	LENGTHS SMALLER THAN 127 WILL BE OFFSET BY 1! ACCOUNT FOR THIS
 	
+End of Record:
+	Every record is ended with a record seperator (30)
+	Skipping through records looking for seperators is encouraged if useful.
+
 End of Table:
-	Marked with a 4 byte after a file seperater.
+	The end of the table is designated by a group seperator (29)
+
+Directories:
+	Directories are stored in the table as a file with the 02 type. Directories data points to the directory's file table.
+	Directories work like linked lists. Pointing to each other with only the top level actually known at the 8th byte.
 	
 Actual data is seperated. It starts at the byte designated by the location.
 Because we know length we don't need a divider (Yes I know, Overflow bait).
