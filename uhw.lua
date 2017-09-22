@@ -35,7 +35,7 @@ function wrapper(name, addr, cType)
 				return true
 			end
 			logFile:write("[I] Wrapping "..addr.."\n")
-			local prox, err = pcall(driver.init, drive)
+			local err, prox = pcall(driver.init, drive)
 			if not prox then
 				logFile:write("[E] " .. err)
 				logFile:close()
@@ -90,7 +90,7 @@ if args[1] == "hook" then --HOOK
 			os.exit()
 		end
 		logFile:close()
-		for component in comp.list("drive") do
+		for component in comp.list("drive", true) do
 			print("UHW_NOTICE: Wrapping all current drives.")
 			io.stderr:write("UHW_WARNING: If not unhooked correctly previously, all currently wrapped drives will produce an error\n")
 			event.pull(3, "SLEEP_DO_NOT_THROW")

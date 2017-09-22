@@ -3,7 +3,6 @@ Format for UHW compatible harddrives:
 Note: This documentation excludes ACDOSFS (another compatible format)
 
 The first 5 bytes of all UHWFS (The format UHW uses) harddrives should contain "UHWFS" followed by a null byte, a version byte.
-Next is a 1 byte root table size byte.
 Following this immediantly is the root file record table.
 Each record is split into 4 parts. The file name, the file type, the data location, and for speed, the data size.
 

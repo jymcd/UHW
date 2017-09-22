@@ -2,6 +2,7 @@ local sys = require "filesystem"
 
 local version = "\1" --Version byte of this driver
 local header = "UHWFS" .. "\0" .. version --Full header of this driver
+local api = {}
 
 local function doMath(drive, start) --Perform odd byte math
 	local now = start --Copy start pointer for size determination
@@ -22,11 +23,12 @@ end
 
 local function parseRecord(drive, start) --Parse individual file record
 	local record = { --Construct basic record
-		name = ""
-		type = ""
-		location = 0
-		length = 0
-		size = start --Set the size to the starting pointer for later calculations
+		name = "",
+		type = "",
+		location = 0,
+		length = 0,
+		size = 0,
+		at = start --record.at shows where at the drive the record is at 
 	}
 	while true do
 		local byte = drive.readByte(start) --Read the next byte
@@ -55,7 +57,7 @@ local function parseRecord(drive, start) --Parse individual file record
 	record.length = result --Set the data length to the math result
 	start = start + bytes + 1 --Jump forward the bytes required for the math (suddenly American) and add one for the end of file byte
 	
-	record.size = start - record.size --Set the size to the current pointer subtracted by the start location
+	record.size = start - record.at --Set the size to the current pointer subtracted by the start location
 	
 	return record --Return finished record
 end
@@ -78,7 +80,7 @@ local function parseTable(drive, start) --Parse record table at location
 				count = count + 1 --Add another byte to counter
 				if byte == 30 then --If the byte is end-of-file
 					break --We've finished the record
-				elseif count == 100 --If we've read 100 bytes
+				elseif count == 100 then --If we've read 100 bytes
 					error("File record tables critically damaged") --Time out, that's a lot of bytes
 				end
 			end
@@ -104,6 +106,37 @@ local function downTheRabbitHole(drive, path) --Recurse down a path and the asso
 	end
 	
 	return location --Return where the last directory in path points
+end
+
+local function getRootSize(drive) --Get size of the root file table
+	local bytes = 0 --Number of bytes read
+	while true do
+		local byte = drive.readByte(bytes + 8) --Get the next byte which is found by number of bytes read + an offset of 8
+		bytes = bytes + 1 --Increment bytes read
+		if byte == 29 then --If the byte is the last byte of the table
+			break --Stop counting
+		end
+	end
+	
+	return bytes --Return number of bytes read
+end
+
+local function scanSize(drive, start) --Recursively scan sizes starting at start
+	local size = 0 --Running total of bytes
+	local records = parseTable(drive, start) --Parse table of records
+	
+	for k, record in pairs(records) do --Loop through all records
+		size = size + record.length --Add the record's data size to the running total
+		if record.type == "directory" then --If the record is a directory
+			size = size + scanSize(drive, record.location) --Scan that directory's size and add it to the total
+		end
+	end
+	
+	return size --Return the running total bytes
+end
+
+local function spaceUsed(drive) --Scan the space used on a drive
+	return getRootSize(drive) + scanSize(drive, 8) --Get the root table size and scan it recursively for file sizes
 end
 
 local function defrag(drive)
@@ -186,7 +219,44 @@ local function size(drive, path) --Find the size of a file
 	end
 end
 
+local function open(drive, path)
+	if not path then
+		return nil, "string expected got nil"
+	end
+	
+	local upLocation, err = downTheRabbitHole(drive, sys.path(path))
+	
+	if err then
+		return nil, err
+	end
+	
+	local record = (parseTable(drive, upLocation))[sys.name(path)]
+	
+	if not record then
+		return nil, "no such file or directory"
+	else
+		return record
+	end
+end
+
+local function read(drive, handle, count)
+	local str = ""
+	local loc = handle.pos
+	for i = loc, loc + count do
+		local byte = drive.readByte(i)
+		str = str .. string.char(byte)
+	end
+	handle.pos = handle.pos + count
+	return str
+end
+
+local function flush(drive, handle)
+
+end
+
 function api.init(drive) --Create filesystem proxy from drive proxy
+	local handles = {}
+
 	local proxy = { 
 		slot = drive.slot, --Copy component slot
 		address = drive.address, --Copy component address
@@ -195,12 +265,12 @@ function api.init(drive) --Create filesystem proxy from drive proxy
 		getLabel = drive.getLabel, --Mirror getLabel drive function
 		setLabel = drive.setLabel, --Mirror setLabel drive function
 		spaceTotal = drive.getCapacity, --Mirror drive's version of spaceTotal
-		isReadOnly = function () --Readonly drives not supported, always return false
-			return false 
-		end
+		isReadOnly = function () --Actually, writing isn't supported yet, let's return true
+			return true
+		end,
 		
 		lastModified = function () --Spoof filesystem lastModified timestamp
-			return math.huge() --Return infinitely large value to prevent wrong operation
+			return math.huge --Return infinitely large value to prevent wrong operation
 		end,
 		
 		defrag = function () --Add wrapper aware function to defrag drive, it gets crowded
@@ -221,13 +291,70 @@ function api.init(drive) --Create filesystem proxy from drive proxy
 		
 		size = function (path) --Spoof filesystem size grabber
 			size(drive, path)
+		end,
+		
+		spaceUsed = function () --Spoof the filesystem spaceUsed only report actual space used, might deviate
+			spaceUsed(drive)
+		end,
+		
+		open = function (path, mode) --Create function to open buffer to file
+			local record, err = open(drive, path)
+			if err then
+				return nil, err
+			end
+			
+			local id = nil
+			while not (id and handles[id]) do
+				id = math.random(100000000)
+			end
+			
+			handles[id] = {
+				where = record,
+				mode = mode or "r",
+				pos = record.location
+			}
+			return id
 		end
+		
+		read = function (id, count)
+			if not handles[id] then
+				return nil, "file not open"
+			end
+		
+			read(drive, handles[id], count)
+		end
+		
+		close = function (id)
+			if not handles[id] then
+				return true
+			end
+			
+			flush(drive, handles[id])
+			handles[id] = nil
+		end
+		
+		seek = function(id, ref, count)
+			if not handles[id] then
+				return nil, "file not open"
+			end
+			
+			local handle
+			local whence = {
+				set = 0,
+				cur = handle.pos
+				end = handle.location + handle.size - 1
+			}
+			
+			handle.location = whence[ref] + count
+			
+			return handle.location
+		}
 	}
 	
 	--Implementation list:
-	-- spaceUsed()		O
-	-- open()			O
-	-- seek()			O
+	-- spaceUsed()		X
+	-- open()			/ Missing modes A and W
+	-- seek()			X
 	-- makeDirectory()	O
 	-- exists()			X
 	-- isReadOnly()		X
@@ -239,9 +366,9 @@ function api.init(drive) --Create filesystem proxy from drive proxy
 	-- lastModified()	X
 	-- getLabel()		X
 	-- remove()			O
-	-- close()			O
+	-- close()			X
 	-- size()			X
-	-- read()			O
+	-- read()			X
 	-- setLabel()		X
 	-- fsnode			O WHAT IS THIS
 	-- slot				X
@@ -250,3 +377,5 @@ function api.init(drive) --Create filesystem proxy from drive proxy
 	
 	return proxy --Return filesystem proxy to wrapper for mounting
 end
+
+return api
